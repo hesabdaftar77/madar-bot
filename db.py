@@ -1,4 +1,4 @@
-"""لایه دیتابیس (SQLite). همه داده‌ها روی دیسک پایدار (Volume) ذخیره می‌شوند."""
+"""لایه دیتابیس ارتقایافته (SQLite) با پشتیبانی از Multi-Tenancy، لایسنس و RBAC."""
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -7,14 +7,36 @@ from datetime import datetime, timezone
 _path: str | None = None
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    tg_id INTEGER PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'consultant',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS licenses (
+    code TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    is_used INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    tg_id INTEGER PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    username TEXT,
+    password_hash TEXT, -- برای ورود غیر تلگرامی یا احراز هویت داخلی
+    role TEXT NOT NULL DEFAULT 'consultant', -- super_admin, admin, consultant
+    can_sale INTEGER NOT NULL DEFAULT 1,
+    can_rent INTEGER NOT NULL DEFAULT 1,
+    view_scope TEXT NOT NULL DEFAULT 'all', -- all, own
+    show_owner_phone INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
     deal_type TEXT NOT NULL,          -- sale | rent
@@ -30,8 +52,10 @@ CREATE TABLE IF NOT EXISTS clients (
     status TEXT NOT NULL DEFAULT 'فعال',
     created_at TEXT NOT NULL
 );
+
 CREATE TABLE IF NOT EXISTS properties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
     title TEXT NOT NULL,
     deal_type TEXT NOT NULL,          -- sale | rent
     region TEXT,
@@ -41,8 +65,9 @@ CREATE TABLE IF NOT EXISTS properties (
     floor INTEGER,
     age INTEGER,
     price REAL,                       -- قیمت کل (میلیون تومان)
+    price_per_meter REAL,             -- قیمت هر متر (میلیون تومان)
     deposit REAL,                     -- رهن (میلیون تومان)
-    rent REAL,                        -- اجاره ماهانه (میلیون تومان)
+    rent real,                        -- اجاره ماهانه (میلیون تومان)
     owner_name TEXT,
     owner_phone TEXT,
     notes TEXT,
@@ -50,8 +75,10 @@ CREATE TABLE IF NOT EXISTS properties (
     status TEXT NOT NULL DEFAULT 'فعال',
     created_at TEXT NOT NULL
 );
+
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
     title TEXT NOT NULL,
     assignee_id INTEGER NOT NULL,
     created_by INTEGER NOT NULL,
@@ -61,8 +88,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     reminded INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
+
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT,
     user_id INTEGER,
     action TEXT NOT NULL,
     detail TEXT,
@@ -70,12 +99,10 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 """
 
-TABLES = {"clients", "properties", "tasks"}
-
+TABLES = {"clients", "properties", "tasks", "users", "workspaces", "licenses"}
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
 
 @contextmanager
 def conn():
@@ -91,7 +118,6 @@ def conn():
     finally:
         c.close()
 
-
 def init(path: str) -> None:
     global _path
     _path = path
@@ -99,176 +125,57 @@ def init(path: str) -> None:
     with conn() as c:
         c.executescript(SCHEMA)
 
+# توابع کمکی مدیریت لایسنس و ورک‌اسپیس
+def create_license(workspace_id: str) -> str:
+    import secrets
+    code = f"MADAR-{secrets.token_hex(4).upper()}"
+    with conn() as c:
+        c.execute("INSERT INTO licenses (code, workspace_id, is_used, created_at) VALUES (?, ?, 0, ?)", (code, workspace_id, now()))
+    return code
 
-# ---------- عمومی ----------
-def insert(table: str, data: dict) -> int:
+def use_license(code: str) -> str | None:
+    with conn() as c:
+        lic = c.execute("SELECT workspace_id, is_used FROM licenses WHERE code=?", (code,)).fetchone()
+        if not lic or lic["is_used"] == 1:
+            return None
+        c.execute("UPDATE licenses SET is_used=1 WHERE code=?", (code,))
+        return lic["workspace_id"]
+
+def get_user(tg_id: int) -> dict | None:
+    with conn() as c:
+        r = c.execute("SELECT * FROM users WHERE tg_id=?", (tg_id,)).fetchone()
+        return dict(r) if r else None
+
+def register_user(tg_id: int, workspace_id: str, name: str, role: str = "consultant"):
+    with conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO users (tg_id, workspace_id, name, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (tg_id, workspace_id, name, role, now())
+        )
+
+# سایر توابع عمومی با فیلتر workspace_id برای ایزوله‌سازی داده‌ها
+def insert_ws(table: str, workspace_id: str, data: dict) -> int:
     assert table in TABLES
     with conn() as c:
         cols = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
         row = {k: v for k, v in data.items() if k in cols and k != "id"}
+        row["workspace_id"] = workspace_id
         row["created_at"] = now()
         keys = ",".join(row)
         qs = ",".join("?" * len(row))
         cur = c.execute(f"INSERT INTO {table} ({keys}) VALUES ({qs})", list(row.values()))
         return cur.lastrowid
 
-
-def get(table: str, rid: int) -> dict | None:
+def get_ws(table: str, workspace_id: str, rid: int) -> dict | None:
     assert table in TABLES
     with conn() as c:
-        r = c.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)).fetchone()
+        r = c.execute(f"SELECT * FROM {table} WHERE id=? AND workspace_id=?", (rid, workspace_id)).fetchone()
         return dict(r) if r else None
 
-
-def recent(table: str, limit: int = 15) -> list[dict]:
-    assert table in TABLES
+def active_properties_ws(workspace_id: str) -> list[dict]:
     with conn() as c:
-        return [dict(r) for r in c.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?", (limit,))]
+        return [dict(r) for r in c.execute("SELECT * FROM properties WHERE workspace_id=? AND status='فعال'", (workspace_id,))]
 
-
-def delete(table: str, rid: int) -> None:
-    assert table in TABLES
+def active_clients_ws(workspace_id: str) -> list[dict]:
     with conn() as c:
-        c.execute(f"DELETE FROM {table} WHERE id=?", (rid,))
-
-
-def set_status(table: str, rid: int, status: str) -> None:
-    assert table in ("clients", "properties")
-    with conn() as c:
-        c.execute(f"UPDATE {table} SET status=? WHERE id=?", (status, rid))
-
-
-def audit(user_id: int | None, action: str, detail: str = "") -> None:
-    with conn() as c:
-        c.execute(
-            "INSERT INTO audit (user_id, action, detail, created_at) VALUES (?,?,?,?)",
-            (user_id, action, detail, now()),
-        )
-
-
-# ---------- کاربران ----------
-def upsert_user(tg_id: int, name: str, role: str) -> None:
-    with conn() as c:
-        c.execute(
-            "INSERT INTO users (tg_id, name, role, created_at) VALUES (?,?,?,?) "
-            "ON CONFLICT(tg_id) DO UPDATE SET name=excluded.name, role=excluded.role",
-            (tg_id, name, role, now()),
-        )
-
-
-def users() -> list[dict]:
-    with conn() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM users ORDER BY created_at")]
-
-
-def user_name(tg_id: int | None) -> str:
-    if tg_id is None:
-        return "—"
-    with conn() as c:
-        r = c.execute("SELECT name FROM users WHERE tg_id=?", (tg_id,)).fetchone()
-        return r["name"] if r else str(tg_id)
-
-
-# ---------- املاک و مشتریان ----------
-def active_properties() -> list[dict]:
-    with conn() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM properties WHERE status='فعال'")]
-
-
-def active_clients() -> list[dict]:
-    with conn() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM clients WHERE status='فعال'")]
-
-
-def find_duplicate(owner_phone: str | None, area, region: str | None) -> dict | None:
-    if not owner_phone:
-        return None
-    with conn() as c:
-        r = c.execute(
-            "SELECT * FROM properties WHERE owner_phone=? AND area IS ? AND region IS ? LIMIT 1",
-            (owner_phone, area, region),
-        ).fetchone()
-        return dict(r) if r else None
-
-
-def search(q: str) -> tuple[list[dict], list[dict]]:
-    like = f"%{q}%"
-    with conn() as c:
-        cl = c.execute(
-            "SELECT * FROM clients WHERE name LIKE ? OR phone LIKE ? OR region LIKE ? OR notes LIKE ? "
-            "ORDER BY id DESC LIMIT 8",
-            (like,) * 4,
-        )
-        cl = [dict(r) for r in cl]
-        pr = c.execute(
-            "SELECT * FROM properties WHERE title LIKE ? OR region LIKE ? OR address LIKE ? "
-            "OR owner_name LIKE ? OR owner_phone LIKE ? ORDER BY id DESC LIMIT 8",
-            (like,) * 5,
-        )
-        pr = [dict(r) for r in pr]
-    return cl, pr
-
-
-# ---------- وظایف ----------
-def open_tasks(uid: int) -> list[dict]:
-    with conn() as c:
-        rows = c.execute(
-            "SELECT * FROM tasks WHERE assignee_id=? AND done=0 ORDER BY (due_at IS NULL), due_at, id",
-            (uid,),
-        )
-        return [dict(r) for r in rows]
-
-
-def complete_task(tid: int) -> None:
-    with conn() as c:
-        c.execute("UPDATE tasks SET done=1, done_at=? WHERE id=?", (now(), tid))
-
-
-def due_tasks(now_iso: str) -> list[dict]:
-    with conn() as c:
-        rows = c.execute(
-            "SELECT * FROM tasks WHERE done=0 AND reminded=0 AND due_at IS NOT NULL AND due_at<=?",
-            (now_iso,),
-        )
-        return [dict(r) for r in rows]
-
-
-def mark_reminded(tid: int) -> None:
-    with conn() as c:
-        c.execute("UPDATE tasks SET reminded=1 WHERE id=?", (tid,))
-
-
-# ---------- لیگ ----------
-POINTS = {"files": 3, "clients": 2, "tasks_done": 1}
-
-
-def league(since_iso: str) -> list[dict]:
-    with conn() as c:
-        rows = c.execute(
-            """
-            SELECT u.tg_id, u.name,
-              (SELECT COUNT(*) FROM properties p WHERE p.advisor_id=u.tg_id AND p.created_at>=?) AS files,
-              (SELECT COUNT(*) FROM clients c WHERE c.advisor_id=u.tg_id AND c.created_at>=?) AS clients,
-              (SELECT COUNT(*) FROM tasks t WHERE t.assignee_id=u.tg_id AND t.done=1 AND t.done_at>=?) AS tasks_done
-            FROM users u
-            """,
-            (since_iso, since_iso, since_iso),
-        )
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["points"] = sum(d[k] * w for k, w in POINTS.items())
-            out.append(d)
-    return sorted(out, key=lambda x: x["points"], reverse=True)
-
-
-# ---------- پشتیبان ----------
-def backup_to(dest: str) -> None:
-    """نسخه پشتیبان سازگار با استفاده از API رسمی SQLite."""
-    src = sqlite3.connect(_path)
-    dst = sqlite3.connect(dest)
-    try:
-        src.backup(dst)
-    finally:
-        dst.close()
-        src.close()
+        return [dict(r) for r in c.execute("SELECT * FROM clients WHERE workspace_id=? AND status='فعال'", (workspace_id,))]
