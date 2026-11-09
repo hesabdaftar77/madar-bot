@@ -36,9 +36,20 @@ async def start_cmd(update, ctx):
     ctx.user_data.clear()
     actor = load_actor(update.effective_user.id)
     if actor:
-        return await common.show_menu(update, ctx, actor, "به ربات مدار پرو خوش آمدید 👋")
-    await common.say(update, ctx, "👋 به ربات مدار پرو خوش آمدید.\nلطفاً لایسنس خود را ارسال کنید.", html=False)
-
+        profile = auth.get_profile(actor.id)
+        profile_text = (
+            f"\n🆔 شماره پروفایل: {profile['profile_number']}"
+            if profile else ""
+        )
+        return await common.show_menu(
+            update, ctx, actor,
+            f"به ربات مدار پرو خوش آمدید 👋{profile_text}"
+        )
+    await common.say(
+        update, ctx,
+        "👋 به ربات مدار پرو خوش آمدید.\nلطفاً لایسنس خود را ارسال کنید.",
+        html=False
+    )
 
 async def menu_cmd(update, ctx):
     actor = load_actor(update.effective_user.id)
