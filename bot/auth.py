@@ -165,3 +165,32 @@ def remove_member(office_id: int, user_id: int, allowed_roles) -> dict | None:
     db.x("UPDATE listings SET advisor_id=NULL WHERE office_id=? AND advisor_id=?", (office_id, u["id"]))
     db.x("UPDATE customers SET advisor_id=NULL WHERE office_id=? AND advisor_id=?", (office_id, u["id"]))
     return u
+# ───────────── پروفایل کاربران ─────────────
+def get_profile(user_id: int):
+    """دریافت شماره پروفایل یکتای کاربر."""
+    return db.q1(
+        "SELECT user_id, profile_number, created_at "
+        "FROM user_profiles WHERE user_id=?",
+        (user_id,)
+    )
+
+
+def ensure_user_profile(user_id: int):
+    """در صورت نبود پروفایل، برای کاربر شماره یکتا ایجاد می‌کند."""
+    profile = get_profile(user_id)
+
+    if profile:
+        return profile
+
+    with db.tx() as cx:
+        cx.execute("""
+            INSERT OR IGNORE INTO user_profiles
+            (user_id, profile_number)
+            VALUES (
+                ?,
+                (SELECT COALESCE(MAX(profile_number), 1000) + 1
+                 FROM user_profiles)
+            )
+        """, (user_id,))
+
+    return get_profile(user_id)
