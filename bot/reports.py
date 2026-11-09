@@ -33,3 +33,66 @@ def monthly(office_id: int, ym: str) -> str:
     active = db.q1("SELECT COUNT(*) n FROM listings WHERE office_id=? AND status='active'", (office_id,))["n"]
     lines += ["", f"📌 فایل فعال فعلی: {util.fnum(active)}"]
     return "\n".join(lines)
+
+def leaderboard(office_id: int, ym: str) -> str:
+    """رتبه‌بندی ماهانه اعضای فعال همان دفتر."""
+    s, e = util.ym_bounds(ym)
+
+    rows = db.q("""
+        SELECT
+            u.id,
+            COALESCE(NULLIF(u.name, ''), u.username, 'بدون نام') AS name,
+
+            (SELECT COUNT(*)
+             FROM listings l
+             WHERE l.office_id = u.office_id
+               AND l.created_by = u.id
+               AND l.created_at >= ? AND l.created_at < ?) AS listings,
+
+            (SELECT COUNT(*)
+             FROM customers c
+             WHERE c.office_id = u.office_id
+               AND c.created_by = u.id
+               AND c.created_at >= ? AND c.created_at < ?) AS customers,
+
+            (SELECT COUNT(*)
+             FROM visits v
+             WHERE v.office_id = u.office_id
+               AND v.advisor_id = u.id
+               AND v.visit_at >= ? AND v.visit_at < ?) AS visits
+
+        FROM users u
+        WHERE u.office_id = ?
+          AND u.role IN ('manager', 'agent')
+          AND u.active = 1
+        ORDER BY
+            (listings + customers + visits) DESC,
+            visits DESC,
+            listings DESC,
+            customers DESC,
+            name ASC
+    """, (s, e, s, e, s, e, office_id))
+
+    lines = [
+        f"🏆 <b>رتبه‌بندی دفتر — {util.ym_label(ym)}</b>",
+        "",
+        "امتیاز هر فایل، مشتری و بازدید: ۱ امتیاز",
+        ""
+    ]
+
+    if not rows:
+        return "\n".join(lines + ["هنوز عضوی در این دفتر ثبت نشده است."])
+
+    medals = ["🥇", "🥈", "🥉"]
+    for i, r in enumerate(rows, 1):
+        total = r["listings"] + r["customers"] + r["visits"]
+        medal = medals[i - 1] if i <= 3 else f"{i}."
+        lines.append(
+            f"{medal} <b>{util.esc(r['name'])}</b> — "
+            f"{util.fnum(total)} امتیاز\n"
+            f"   📁 فایل: {util.fnum(r['listings'])} | "
+            f"👤 مشتری: {util.fnum(r['customers'])} | "
+            f"🏠 بازدید: {util.fnum(r['visits'])}"
+        )
+
+    return "\n".join(lines)
