@@ -1,0 +1,6 @@
+python-telegram-bot[job-queue]>=20.7,<22
+jdatetime>=4.1.1
+bcrypt>=4.1.2
+openpyxl>=3.1.2
+python-dotenv>=1.0.1
+tzdata>=2024.1
