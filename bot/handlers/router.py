@@ -98,11 +98,23 @@ async def _menu(update, ctx, actor, text):
 async def _report_menu(update, ctx, actor):
     ym = util.ym_now()
     keys = [ym]
+
     for _ in range(5):
         keys.append(util.ym_prev(keys[-1]))
-    kb = [[(util.ym_label(k) + (" (جاری)" if k == ym else ""), f"r:m:{k}")] for k in keys]
-    await common.say(update, ctx, "📊 <b>گزارش ماهانه</b> — ماه را انتخاب کنید:", ikb(kb))
 
+    kb = []
+    for k in keys:
+        label = util.ym_label(k) + (" (جاری)" if k == ym else "")
+        kb.append([
+            (f"📊 گزارش {label}", f"r:m:{k}"),
+            (f"🏆 رتبه‌بندی {label}", f"r:l:{k}")
+        ])
+
+    await common.say(
+        update, ctx,
+        "📊 گزارش و 🏆 رتبه‌بندی دفتر — ماه را انتخاب کنید:",
+        ikb(kb)
+    )
 
 # ───────────── متن ─────────────
 async def on_text(update, ctx):
