@@ -94,13 +94,14 @@ def can_add_agent(office_id: int) -> bool:
 
 
 # ───────────── ورود ─────────────
+
 def try_login(tg_id: int, name: str, username: str, text: str):
-    """('ok', user_row) | ('member', None) | ('invalid', None).
-    رمز اشتباه سازنده و لایسنس اشتباه دقیقاً یک نتیجه دارند."""
+    """('ok', user_row) | ('member', None) | ('invalid', None)."""
     token = (text or "").strip()
     if not token or len(token) > 300:
         return "invalid", None
-    is_super = verify_super(token)          # هر دو چک همیشه اجرا می‌شوند
+
+    is_super = verify_super(token)
     lic = find_license(token)
     existing = db.q1("SELECT * FROM users WHERE tg_id=?", (tg_id,))
     now = util.now_str()
@@ -110,11 +111,25 @@ def try_login(tg_id: int, name: str, username: str, text: str):
             db.x("UPDATE users SET active=0 WHERE id=?", (existing["id"],))
             db.x("DELETE FROM users WHERE id=?", (existing["id"],))
             existing = None
+
         if existing:
-            db.x("UPDATE users SET name=?, username=?, active=1 WHERE id=?", (name, username, existing["id"]))
+            db.x(
+                "UPDATE users SET name=?, username=?, active=1 WHERE id=?",
+                (name, username, existing["id"])
+            )
         else:
-            db.x("INSERT INTO users(tg_id,name,username,role,created_at) VALUES(?,?,?,?,?)",
-                 (tg_id, name, username, "super_admin", now))
+            db.x(
+                "INSERT INTO users(tg_id,name,username,role,created_at) VALUES(?,?,?,?,?)",
+                (tg_id, name, username, "super_admin", now)
+            )
+
+        super_user = db.q1(
+            "SELECT id FROM users WHERE tg_id=?",
+            (tg_id,)
+        )
+        if super_user:
+            ensure_user_profile(super_user["id"])
+
         return "ok", db.q1("SELECT * FROM users WHERE tg_id=?", (tg_id,))
 
     if not lic:
@@ -125,25 +140,34 @@ def try_login(tg_id: int, name: str, username: str, text: str):
         return "member", None
     if not db.q1("SELECT id FROM offices WHERE id=?", (lic["office_id"],)):
         return "invalid", None
-    # مصرف اتمیک: فقط یک نفر می‌تواند لایسنس را بردارد
-    n = db.xc("UPDATE licenses SET used_at=?, used_by=? WHERE id=? AND used_at IS NULL AND revoked=0",
-              (now, tg_id, lic["id"]))
+
+    # مصرف اتمیک لایسنس
+    n = db.xc(
+        "UPDATE licenses SET used_at=?, used_by=? WHERE id=? AND used_at IS NULL AND revoked=0",
+        (now, tg_id, lic["id"])
+    )
     if n != 1:
         return "invalid", None
-    if existing:
-        db.x("UPDATE users SET name=?, username=?, role=?, office_id=?, active=1, license_id=? WHERE id=?",
-             (name, username, lic["role"], lic["office_id"], lic["id"], existing["id"]))
-    else:
-        db.x("INSERT INTO users(tg_id,name,username,role,office_id,license_id,created_at) VALUES(?,?,?,?,?,?,?)",
-             (tg_id, name, username, lic["role"], lic["office_id"], lic["id"], now))
-        super_user = db.q1(
-    "SELECT id FROM users WHERE tg_id=?",
-    (tg_id,)
-)
-if super_user:
-    ensure_user_profile(super_user["id"])
-    return "ok", db.q1("SELECT * FROM users WHERE tg_id=?", (tg_id,))
 
+    if existing:
+        db.x(
+            "UPDATE users SET name=?, username=?, role=?, office_id=?, active=1, license_id=? WHERE id=?",
+            (name, username, lic["role"], lic["office_id"], lic["id"], existing["id"])
+        )
+    else:
+        db.x(
+            "INSERT INTO users(tg_id,name,username,role,office_id,license_id,created_at) VALUES(?,?,?,?,?,?,?)",
+            (tg_id, name, username, lic["role"], lic["office_id"], lic["id"], now)
+        )
+
+    member_user = db.q1(
+        "SELECT id FROM users WHERE tg_id=?",
+        (tg_id,)
+    )
+    if member_user:
+        ensure_user_profile(member_user["id"])
+
+    return "ok", db.q1("SELECT * FROM users WHERE tg_id=?", (tg_id,))
 
 # ───────────── اعضا ─────────────
 def members(office_id: int, roles=("manager", "agent")):
