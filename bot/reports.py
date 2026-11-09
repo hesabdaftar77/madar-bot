@@ -1,0 +1,35 @@
+"""گزارش ماهانه بر اساس ماه شمسی."""
+from . import db, fields, util
+
+
+def monthly(office_id: int, ym: str) -> str:
+    s, e = util.ym_bounds(ym)
+    n_l = db.q1("SELECT COUNT(*) n FROM listings WHERE office_id=? AND created_at>=? AND created_at<?",
+                (office_id, s, e))["n"]
+    n_c = db.q1("SELECT COUNT(*) n FROM customers WHERE office_id=? AND created_at>=? AND created_at<?",
+                (office_id, s, e))["n"]
+    n_v = db.q1("SELECT COUNT(*) n FROM visits WHERE office_id=? AND visit_at>=? AND visit_at<?",
+                (office_id, s, e))["n"]
+    deals = db.q("SELECT property_type, COUNT(*) n FROM listings WHERE office_id=? AND sold_at>=? AND sold_at<? "
+                 "GROUP BY property_type", (office_id, s, e))
+    by_pt = db.q("SELECT property_type, COUNT(*) n FROM listings WHERE office_id=? AND created_at>=? AND created_at<? "
+                 "GROUP BY property_type", (office_id, s, e))
+    by_src = db.q("SELECT COALESCE(source,'نامشخص') src, COUNT(*) n FROM customers WHERE office_id=? AND created_at>=? "
+                  "AND created_at<? GROUP BY src", (office_id, s, e))
+    n_d = sum(r["n"] for r in deals)
+    lines = [f"📊 <b>گزارش {util.ym_label(ym)}</b>", "",
+             f"📁 فایل جدید: {util.fnum(n_l)}", f"👤 مشتری جدید: {util.fnum(n_c)}",
+             f"🏠 بازدید: {util.fnum(n_v)}", f"🤝 معامله: {util.fnum(n_d)}"]
+    if by_pt:
+        lines += ["", "<b>فایل‌های جدید به تفکیک نوع ملک</b>"]
+        lines += [f"• {fields.ptype_title(r['property_type'])}: {util.fnum(r['n'])}" for r in by_pt]
+    if deals:
+        lines += ["", "<b>معاملات به تفکیک نوع ملک</b>"]
+        lines += [f"• {fields.ptype_title(r['property_type'])}: {util.fnum(r['n'])}" for r in deals]
+    if by_src:
+        src = {"دیوار": "دیوار", "معرفی": "معرفی", "مراجعه": "مراجعه"}
+        lines += ["", "<b>مشتری‌های جدید به تفکیک منبع جذب</b>"]
+        lines += [f"• {src.get(r['src'], r['src'])}: {util.fnum(r['n'])}" for r in by_src]
+    active = db.q1("SELECT COUNT(*) n FROM listings WHERE office_id=? AND status='active'", (office_id,))["n"]
+    lines += ["", f"📌 فایل فعال فعلی: {util.fnum(active)}"]
+    return "\n".join(lines)
