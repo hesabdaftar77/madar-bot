@@ -166,6 +166,41 @@ def tx(path=None):
     finally:
         cx.close()
 
+def ensure_profile_numbers(cx):
+    cx.execute("""
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id INTEGER PRIMARY KEY,
+            profile_number INTEGER UNIQUE,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
+    users = cx.execute("""
+        SELECT id FROM users
+        ORDER BY id ASC
+    """).fetchall()
+
+    next_number = cx.execute("""
+        SELECT COALESCE(MAX(profile_number), 1000) + 1
+        FROM user_profiles
+    """).fetchone()[0]
+
+    for user in users:
+        user_id = user[0]
+
+        exists = cx.execute("""
+            SELECT 1 FROM user_profiles
+            WHERE user_id = ?
+        """, (user_id,)).fetchone()
+
+        if not exists:
+            cx.execute("""
+                INSERT INTO user_profiles (user_id, profile_number)
+                VALUES (?, ?)
+            """, (user_id, next_number))
+
+            next_number += 1
 
 def init_db():
     from . import seed
