@@ -136,6 +136,12 @@ def try_login(tg_id: int, name: str, username: str, text: str):
     else:
         db.x("INSERT INTO users(tg_id,name,username,role,office_id,license_id,created_at) VALUES(?,?,?,?,?,?,?)",
              (tg_id, name, username, lic["role"], lic["office_id"], lic["id"], now))
+        super_user = db.q1(
+    "SELECT id FROM users WHERE tg_id=?",
+    (tg_id,)
+)
+if super_user:
+    ensure_user_profile(super_user["id"])
     return "ok", db.q1("SELECT * FROM users WHERE tg_id=?", (tg_id,))
 
 
