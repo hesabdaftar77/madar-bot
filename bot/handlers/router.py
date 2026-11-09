@@ -204,11 +204,22 @@ async def on_callback(update, ctx):
 
 
 @guard()
+@guard()
 async def _report_cb(update, ctx, actor, sub):
+    if not sub:
+        return
+
     if sub[0] == "m":
-        await common.say(update, ctx, reports.monthly(actor.office_id, sub[1]))
+        return await common.say(
+            update, ctx,
+            reports.monthly(actor.office_id, sub[1])
+        )
 
-
+    if sub[0] == "l":
+        return await common.say(
+            update, ctx,
+            reports.leaderboard(actor.office_id, sub[1])
+        )
 async def on_photo(update, ctx):
     actor = load_actor(update.effective_user.id)
     st = common.state(ctx)
