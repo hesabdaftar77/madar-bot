@@ -208,7 +208,7 @@ def init_db():
     try:
         cx.executescript(SCHEMA)
         seed.seed(cx)
-      ensure_profile_numbers(cx)
+        ensure_profile_numbers(cx)
         cx.commit()
     finally:
         cx.close()
